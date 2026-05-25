@@ -138,7 +138,7 @@ describe('Post and Comment Flows', () => {
           intent: "ask"
         });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
       expect(res.body.message).toContain('either content or image are required');
     });
@@ -388,7 +388,8 @@ describe('Post and Comment Flows', () => {
         recipient: user._id,
         sender: commenter._id,
         type: "comment",
-        post: post._id
+        post: post._id,
+        comment: comment._id,
       });
 
       const deleteRes = await request(app)
@@ -452,6 +453,38 @@ describe('Post and Comment Flows', () => {
       expect(commentRes.body.message).toContain('Follow them to comment');
       expect(await Comment.countDocuments({ post: privatePost._id })).toBe(0);
       expect(await Notification.countDocuments({ recipient: privateUser._id, type: 'comment', post: privatePost._id })).toBe(0);
+    });
+  });
+
+  describe('Search Posts', () => {
+    beforeAll(async () => {
+      await Post.createIndexes(); // Ensure text index is built
+    });
+
+    it('should return relevant posts for query', async () => {
+      await Post.create({
+        author: user._id,
+        content: "Unique search keyword",
+        intent: "share"
+      });
+
+      const res = await request(app)
+        .get('/api/posts/search?q=Unique')
+        .set('Cookie', cookie);
+
+      expect(res.status).toBe(200);
+      expect(res.body.posts).toBeDefined();
+      expect(res.body.posts.length).toBeGreaterThan(0);
+      expect(res.body.posts[0].content).toContain('Unique');
+    });
+
+    it('should return empty posts if no query is provided', async () => {
+      const res = await request(app)
+        .get('/api/posts/search')
+        .set('Cookie', cookie);
+
+      expect(res.status).toBe(200);
+      expect(res.body.posts).toEqual([]);
     });
   });
 });
