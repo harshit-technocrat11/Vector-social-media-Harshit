@@ -222,49 +222,70 @@ export const toggleFollowUser = async (req, res) => {
         const existingFollow = await Follow.findOne({ follower: currentUserId, following: targetUserId });
 
         if (existingFollow && existingFollow.status === "accepted") {
-            // Unfollow logic
-            await Follow.deleteOne({ _id: existingFollow._id });
-            await User.updateOne({ _id: currentUserId }, { $inc: { followingCount: -1 } });
-            await User.updateOne({ _id: targetUserId }, { $inc: { followersCount: -1 } });
+            // Unfollow: atomically delete the accepted Follow doc and decrement counts
+            const deleted = await Follow.findOneAndDelete({ follower: currentUserId, following: targetUserId, status: "accepted" });
+            if (deleted) {
+                await User.updateOne({ _id: currentUserId }, { $inc: { followingCount: -1 } });
+                await User.updateOne({ _id: targetUserId }, { $inc: { followersCount: -1 } });
+            }
             return res.json({ followed: false });
         } else if (existingFollow && existingFollow.status === "pending") {
-            // Cancel follow request
-            await Follow.deleteOne({ _id: existingFollow._id });
-            await Notification.deleteOne({ recipient: targetUserId, sender: currentUserId, type: "follow_request" });
+            // Cancel follow request: atomically delete the pending Follow doc
+            const deleted = await Follow.findOneAndDelete({ follower: currentUserId, following: targetUserId, status: "pending" });
+            if (deleted) {
+                await Notification.deleteOne({ recipient: targetUserId, sender: currentUserId, type: "follow_request" });
+            }
             return res.json({ requested: false, message: "Follow request cancelled" });
         } else {
-            // Check if account is private
+            // New follow: use upsert so concurrent requests collapse on the unique index
+            // rather than racing to insert and surfacing a duplicate-key 500.
             if (targetUser.isPrivate) {
-                await Follow.create({ follower: currentUserId, following: targetUserId, status: "pending" });
-                const notification = await Notification.create({
-                    recipient: targetUser._id,
-                    sender: req.user._id,
-                    type: "follow_request",
-                });
-                getIO().to(targetUser._id.toString()).emit("notification:new", {
-                    notificationId: notification._id,
-                    type: notification.type,
-                });
+                const result = await Follow.findOneAndUpdate(
+                    { follower: currentUserId, following: targetUserId },
+                    { $setOnInsert: { follower: currentUserId, following: targetUserId, status: "pending" } },
+                    { upsert: true, new: true, rawResult: true }
+                );
+                // Only send notification if we actually created a new document
+                if (result.lastErrorObject?.upserted) {
+                    const notification = await Notification.create({
+                        recipient: targetUser._id,
+                        sender: req.user._id,
+                        type: "follow_request",
+                    });
+                    getIO().to(targetUser._id.toString()).emit("notification:new", {
+                        notificationId: notification._id,
+                        type: notification.type,
+                    });
+                }
                 return res.json({ requested: true, message: "Follow request sent" });
             } else {
-                // Public account follow (immediate)
-                await Follow.create({ follower: currentUserId, following: targetUserId, status: "accepted" });
-                await User.updateOne({ _id: currentUserId }, { $inc: { followingCount: 1 } });
-                await User.updateOne({ _id: targetUserId }, { $inc: { followersCount: 1 } });
-
-                const notification = await Notification.create({
-                    recipient: targetUser._id,
-                    sender: req.user._id,
-                    type: "follow",
-                });
-                getIO().to(targetUser._id.toString()).emit("notification:new", {
-                    notificationId: notification._id,
-                    type: notification.type,
-                });
+                // Public account — immediate follow
+                const result = await Follow.findOneAndUpdate(
+                    { follower: currentUserId, following: targetUserId },
+                    { $setOnInsert: { follower: currentUserId, following: targetUserId, status: "accepted" } },
+                    { upsert: true, new: true, rawResult: true }
+                );
+                if (result.lastErrorObject?.upserted) {
+                    await User.updateOne({ _id: currentUserId }, { $inc: { followingCount: 1 } });
+                    await User.updateOne({ _id: targetUserId }, { $inc: { followersCount: 1 } });
+                    const notification = await Notification.create({
+                        recipient: targetUser._id,
+                        sender: req.user._id,
+                        type: "follow",
+                    });
+                    getIO().to(targetUser._id.toString()).emit("notification:new", {
+                        notificationId: notification._id,
+                        type: notification.type,
+                    });
+                }
                 return res.json({ followed: true });
             }
         }
     } catch (error) {
+        // E11000: concurrent request already inserted the same Follow doc — not an error for the client
+        if (error.code === 11000) {
+            return res.json({ followed: true });
+        }
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -775,24 +796,8 @@ export const unblockUser = async (req, res) => {
             { $pull: { blockedUsers: targetUserId } }
         );
 
-        // Clean up any stale follow relationships that accumulated during the block
-        // (due to race conditions in blockUser's original unconditional $inc)
-        await User.updateOne(
-            { _id: currentUserId, following: targetUserId },
-            { $pull: { following: targetUserId }, $inc: { followingCount: -1 } }
-        );
-        await User.updateOne(
-            { _id: currentUserId, followers: targetUserId },
-            { $pull: { followers: targetUserId }, $inc: { followersCount: -1 } }
-        );
-        await User.updateOne(
-            { _id: targetUserId, followers: currentUserId },
-            { $pull: { followers: currentUserId }, $inc: { followersCount: -1 } }
-        );
-        await User.updateOne(
-            { _id: targetUserId, following: currentUserId },
-            { $pull: { following: currentUserId }, $inc: { followingCount: -1 } }
-        );
+        // No Follow-collection cleanup needed here: blockUser already deleted all Follow
+        // documents between the two users at block-time. There is nothing to unwind.
 
         const io = getIO();
         io.to(currentUserId).emit("user:unblocked", { unblockedUserId: targetUserId, blockerId: currentUserId });
