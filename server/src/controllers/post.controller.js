@@ -97,12 +97,13 @@ export const getPosts = async (req, res) => {
         const limit = parseInt(req.query.limit) || 10;
 
         let filter = {};
+        let excludeUserIds = [];
         if (req.user) {
             const currentUserId = req.user._id || req.user.id;
             const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
             const blockerIds = blockers.map(u => u._id);
             const blockedIds = req.user.blockedUsers || [];
-            let excludeUserIds = [...blockedIds, ...blockerIds];
+            excludeUserIds = [...blockedIds, ...blockerIds];
 
             if (excludeUserIds.length > 0) {
                 filter = { author: { $nin: excludeUserIds } };
@@ -128,7 +129,11 @@ export const getPosts = async (req, res) => {
             .sort({ _id: -1 })
             .limit(limit)
             .populate("author", "username name surname avatar")
-            .populate("likes", "username name avatar _id");
+            .populate(
+                excludeUserIds.length
+                    ? { path: "likes", select: "username name avatar _id", match: { _id: { $nin: excludeUserIds } } }
+                    : { path: "likes", select: "username name avatar _id" }
+            );
 
         const hasMore = posts.length === limit;
         const nextCursor = hasMore ? posts[posts.length - 1]._id : null;
@@ -489,7 +494,23 @@ export const getPostsByUser = async (req, res) => {
             });
         }
 
-        const posts = await Post.find({ author: userId }).populate("author", "username name avatar").populate("likes", "username name avatar _id").sort({ createdAt: -1 });
+        let excludeUserIds = [];
+        if (req.user) {
+            const currentUserId = req.user._id || req.user.id;
+            const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+            const blockerIds = blockers.map(u => u._id);
+            const blockedIds = req.user.blockedUsers || [];
+            excludeUserIds = [...blockedIds, ...blockerIds];
+        }
+
+        const posts = await Post.find({ author: userId })
+            .populate("author", "username name avatar")
+            .populate(
+                excludeUserIds.length
+                    ? { path: "likes", select: "username name avatar _id", match: { _id: { $nin: excludeUserIds } } }
+                    : { path: "likes", select: "username name avatar _id" }
+            )
+            .sort({ createdAt: -1 });
         const userBookmarkSet = req.user?.bookmarks
         ? new Set(req.user.bookmarks.map(String))
         : new Set();
@@ -516,7 +537,22 @@ export const getSinglePost = async (req, res) => {
             return res.status(400).json({ message: "Invalid post ID format" });
         }
 
-        const post = await Post.findById(postId).populate("author", "username name avatar isPrivate").populate("likes", "username name avatar _id");
+        let excludeUserIds = [];
+        if (req.user) {
+            const currentUserId = req.user._id || req.user.id;
+            const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+            const blockerIds = blockers.map(u => u._id);
+            const blockedIds = req.user.blockedUsers || [];
+            excludeUserIds = [...blockedIds, ...blockerIds];
+        }
+
+        const post = await Post.findById(postId)
+            .populate("author", "username name avatar isPrivate")
+            .populate(
+                excludeUserIds.length
+                    ? { path: "likes", select: "username name avatar _id", match: { _id: { $nin: excludeUserIds } } }
+                    : { path: "likes", select: "username name avatar _id" }
+            );
         if (!post) {
             return res.status(404).json({ message: "Post not found" });
         }
@@ -564,13 +600,14 @@ export const getTopPostsOfWeek = async (req, res) => {
             ? requestedLimit
             : 10;
         let filter = { createdAt: { $gte: oneWeekAgo } };
+        let excludeUserIds = [];
 
         if (req.user) {
             const currentUserId = req.user._id || req.user.id;
             const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
             const blockerIds = blockers.map((user) => user._id);
             const blockedIds = req.user.blockedUsers || [];
-            let excludeUserIds = [...blockedIds, ...blockerIds];
+            excludeUserIds = [...blockedIds, ...blockerIds];
 
             if (excludeUserIds.length > 0) {
                 filter = {
@@ -590,7 +627,8 @@ export const getTopPostsOfWeek = async (req, res) => {
             { $match: filter },
             {
                 $addFields: {
-                    likesCount: { $size: "$likes" },
+                    likes: { $setDifference: ["$likes", excludeUserIds] },
+                    likesCount: { $size: { $setDifference: ["$likes", excludeUserIds] } },
                     commentsCount: { $ifNull: ["$commentsCount", 0] },
                     sharesCount: { $ifNull: ["$sharesCount", 0] },
                 },
@@ -655,13 +693,14 @@ export const getTopPostsOfMonth = async (req, res) => {
         oneMonthAgo.setDate(oneMonthAgo.getDate() - 30);
 
         let filter = { createdAt: { $gte: oneMonthAgo } };
+        let excludeUserIds = [];
 
         if (req.user) {
             const currentUserId = req.user._id || req.user.id;
             const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
             const blockerIds = blockers.map((user) => user._id);
             const blockedIds = req.user.blockedUsers || [];
-            let excludeUserIds = [...blockedIds, ...blockerIds];
+            excludeUserIds = [...blockedIds, ...blockerIds];
 
             if (excludeUserIds.length > 0) {
                 filter = {
@@ -681,7 +720,8 @@ export const getTopPostsOfMonth = async (req, res) => {
             { $match: filter },
             {
                 $addFields: {
-                    likesCount: { $size: "$likes" },
+                    likes: { $setDifference: ["$likes", excludeUserIds] },
+                    likesCount: { $size: { $setDifference: ["$likes", excludeUserIds] } },
                     commentsCount: { $ifNull: ["$commentsCount", 0] },
                     sharesCount: { $ifNull: ["$sharesCount", 0] },
                 },

@@ -4,6 +4,7 @@ import Conversation from "../models/conversation.model.js";
 import Message from "../models/message.model.js";
 import Notification from "../models/notification.model.js";
 import Post from "../models/post.model.js";
+import Comment from "../models/comment.model.js";
 import { getIO } from "../socket/socket.js";
 import { uploadToCloudinary } from "../utils/uploadCleanup.js";
 
@@ -823,6 +824,12 @@ export const blockUser = async (req, res) => {
             { $pull: { likes: targetUserId } }
         );
 
+        // Remove the blocker's likes from the blocked user's posts
+        await Post.updateMany(
+            { author: targetUserId },
+            { $pull: { likes: currentUserId } }
+        );
+
         // Remove bookmarks between the two users
         const [currentUserPosts, targetUserPosts] = await Promise.all([
             Post.find({ author: currentUserId }).select("_id").lean(),
@@ -830,6 +837,35 @@ export const blockUser = async (req, res) => {
         ]);
         const currentUserPostIds = currentUserPosts.map(p => p._id);
         const targetUserPostIds = targetUserPosts.map(p => p._id);
+
+        // Remove comments in both directions and keep commentsCount accurate
+        const [blockedOnCurrentCounts, blockerOnTargetCounts] = await Promise.all([
+            Comment.aggregate([
+                { $match: { post: { $in: currentUserPostIds }, author: targetUser._id } },
+                { $group: { _id: "$post", count: { $sum: 1 } } },
+            ]),
+            Comment.aggregate([
+                { $match: { post: { $in: targetUserPostIds }, author: currentUser._id } },
+                { $group: { _id: "$post", count: { $sum: 1 } } },
+            ]),
+        ]);
+
+        await Promise.all([
+            Comment.deleteMany({ post: { $in: currentUserPostIds }, author: targetUser._id }),
+            Comment.deleteMany({ post: { $in: targetUserPostIds }, author: currentUser._id }),
+        ]);
+
+        const commentCountUpdates = [
+            ...blockedOnCurrentCounts.map(({ _id, count }) => ({
+                updateOne: { filter: { _id }, update: { $inc: { commentsCount: -count } } },
+            })),
+            ...blockerOnTargetCounts.map(({ _id, count }) => ({
+                updateOne: { filter: { _id }, update: { $inc: { commentsCount: -count } } },
+            })),
+        ];
+        if (commentCountUpdates.length) {
+            await Post.bulkWrite(commentCountUpdates, { ordered: false });
+        }
         await Promise.all([
             User.updateOne(
                 { _id: currentUserId },
@@ -846,6 +882,8 @@ export const blockUser = async (req, res) => {
         io.to(targetUserId).emit("user:blocked", { blockedUserId: currentUserId, blockerId: currentUserId });
         io.to(currentUserId).emit("bookmarks:invalidated", { userId: targetUserId });
         io.to(targetUserId).emit("bookmarks:invalidated", { userId: currentUserId });
+        io.to(currentUserId).emit("block:likes_cleaned", { targetUserId, postIds: targetUserPostIds.map(String) });
+        io.to(targetUserId).emit("block:likes_cleaned", { targetUserId: currentUserId, postIds: currentUserPostIds.map(String) });
 
         return res.json({
             success: true,

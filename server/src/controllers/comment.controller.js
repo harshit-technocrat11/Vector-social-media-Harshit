@@ -121,7 +121,19 @@ export const getPostComments = async (req, res) => {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 20;
 
-        const comments = await Comment.find({ post: postId })
+        let excludeUserIds = [];
+        if (req.user) {
+            const currentUserId = req.user._id || req.user.id;
+            const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+            const blockerIds = blockers.map((u) => u._id);
+            const blockedIds = req.user.blockedUsers || [];
+            excludeUserIds = [...blockedIds, ...blockerIds];
+        }
+
+        const comments = await Comment.find({
+            post: postId,
+            ...(excludeUserIds.length ? { author: { $nin: excludeUserIds } } : {}),
+        })
             .sort({ createdAt: 1 })
             .skip((page - 1) * limit)
             .limit(limit)
