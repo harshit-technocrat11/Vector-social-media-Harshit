@@ -1,9 +1,9 @@
 import User from "../models/user.model.js"
 import { registerSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema } from "../validators/user.validator.js";
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
+import { generateToken, getCookieOptions } from "../utils/generateToken.js";
 
 const sendResetEmail = async (email, token) => {
     const transporter = nodemailer.createTransport({
@@ -110,19 +110,9 @@ export const register = async (req, res) => {
             isProfileComplete: true,
         });
 
-        const token = jwt.sign(
-            { id: user._id, version: user.tokenVersion || 0 },
-            process.env.JWT_SECRET,
-            { expiresIn: "7d" }
-        );
+        const token = generateToken(user._id, user.tokenVersion || 0);
 
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            path: "/",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+        res.cookie("token", token, getCookieOptions());
 
         return res.status(200).json({
             success: true,
@@ -195,14 +185,8 @@ export const login = async (req, res) => {
                 message: "Invalid username or password."
             })
         }
-        const token = jwt.sign({ id: user._id, version: user.tokenVersion || 0 }, process.env.JWT_SECRET, { expiresIn: '7d' });
-        res.cookie("token", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-            path: "/",
-            maxAge: 7 * 24 * 60 * 60 * 1000,
-        });
+        const token = generateToken(user._id, user.tokenVersion || 0);
+        res.cookie("token", token, getCookieOptions());
         return res.status(200).json({
             success: true,
             message: "Logged In successfully"
@@ -217,12 +201,7 @@ export const login = async (req, res) => {
 
 export const logout = async (req, res) => {
     try {
-        res.clearCookie('token', {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-            path: "/",
-        });
+        res.clearCookie('token', getCookieOptions());
         return res.status(200).json({
             success: true,
             message: "Logged out successfully"
