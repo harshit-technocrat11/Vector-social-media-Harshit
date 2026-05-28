@@ -9,6 +9,7 @@ import { Eye, EyeOff, Plus } from "lucide-react";
 import { toast } from "react-toastify";
 import axios from "axios";
 import { useAppContext } from "@/context/AppContext";
+import { getErrorMessage } from "@/lib/error";
 
 export default function RegistrationForm() {
   const router = useRouter();
@@ -116,13 +117,7 @@ export default function RegistrationForm() {
       toast.success("Account created successfully!");
       router.replace("/main");
     } catch (error: unknown) {
-      const message =
-        axios.isAxiosError(error)
-          ? error.response?.data?.message || error.message
-          : error instanceof Error
-            ? error.message
-            : "Something went wrong";
-
+      const message = getErrorMessage(error);
       setFormError(message);
       toast.error(message);
     } finally {
