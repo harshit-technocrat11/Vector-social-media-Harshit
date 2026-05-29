@@ -1,4 +1,5 @@
 import cloudinary from "../config/cloudinary.js";
+import mongoose from "mongoose";
 import User from "../models/user.model.js";
 import Follow from "../models/follow.model.js";
 import Conversation from "../models/conversation.model.js";
@@ -497,8 +498,31 @@ export const getFollowers = async (req, res) => {
             return res.status(403).json({ message: "This account is private. Follow to see their followers." });
         }
 
-        const followersList = await Follow.find({ following: req.params.id, status: "accepted" }).populate("follower", "name username avatar");
-        res.status(200).json(followersList.map(f => f.follower));
+        const cursor = req.query.cursor || null;
+        const limit = parseInt(req.query.limit) || 20;
+
+        let filter = { following: req.params.id, status: "accepted" };
+        if (cursor) {
+            if (mongoose.Types.ObjectId.isValid(cursor)) {
+                filter._id = { $lt: cursor };
+            } else {
+                return res.status(400).json({ success: false, message: "Invalid cursor format" });
+            }
+        }
+
+        const followersList = await Follow.find(filter)
+            .sort({ _id: -1 })
+            .limit(limit)
+            .populate("follower", "name username avatar");
+
+        const hasMore = followersList.length === limit;
+        const nextCursor = hasMore ? followersList[followersList.length - 1]._id : null;
+
+        res.status(200).json({
+            followers: followersList.map(f => f.follower),
+            nextCursor,
+            hasMore
+        });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
@@ -537,8 +561,31 @@ export const getFollowing = async (req, res) => {
             return res.status(403).json({ message: "This account is private. Follow to see who they follow." });
         }
 
-        const followingList = await Follow.find({ follower: req.params.id, status: "accepted" }).populate("following", "name username avatar");
-        res.status(200).json(followingList.map(f => f.following));
+        const cursor = req.query.cursor || null;
+        const limit = parseInt(req.query.limit) || 20;
+
+        let filter = { follower: req.params.id, status: "accepted" };
+        if (cursor) {
+            if (mongoose.Types.ObjectId.isValid(cursor)) {
+                filter._id = { $lt: cursor };
+            } else {
+                return res.status(400).json({ success: false, message: "Invalid cursor format" });
+            }
+        }
+
+        const followingList = await Follow.find(filter)
+            .sort({ _id: -1 })
+            .limit(limit)
+            .populate("following", "name username avatar");
+
+        const hasMore = followingList.length === limit;
+        const nextCursor = hasMore ? followingList[followingList.length - 1]._id : null;
+
+        res.status(200).json({
+            following: followingList.map(f => f.following),
+            nextCursor,
+            hasMore
+        });
     } catch (err) {
         res.status(500).json({ message: err.message });
     }
