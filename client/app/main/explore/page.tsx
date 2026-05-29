@@ -91,6 +91,7 @@ export default function Explore() {
   const [open, setOpen] = useState(false);
   const [suggestedUsers, setSuggestedUsers] = useState<SuggestedUser[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(true);
+  const [showAllSuggestions, setShowAllSuggestions] = useState(false);
   const [followingState, setFollowingState] = useState<Record<string, "follow" | "requested" | "following">>({});
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -270,6 +271,10 @@ export default function Explore() {
       document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const displayedUsers = showAllSuggestions
+  ? suggestedUsers
+  : suggestedUsers.slice(0, 4);
+
   return (
     <div className="w-full min-w-0 overflow-x-hidden py-5 px-4 sm:px-7">
       <div className="space-y-8">
@@ -422,8 +427,11 @@ export default function Explore() {
                 <p className="text-sm text-muted-foreground">No suggestions right now</p>
               ) : (
                 <div className="flex flex-col gap-3">
-                  {suggestedUsers.map((user) => {
+                  {displayedUsers.map((user) => {
                     const state = followingState[user._id] ?? "follow";
+
+                    
+
                     return (
                       <div
                         key={user._id}
@@ -491,6 +499,15 @@ export default function Explore() {
                     );
                   })}
                 </div>
+              )}
+              {suggestedUsers.length > 4 && !showAllSuggestions && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllSuggestions(true)}
+                  className="w-full rounded-lg border border-border py-2 text-sm font-medium hover:bg-accent/50"
+                >
+                  Show More
+                </button>
               )}
             </section>
 
