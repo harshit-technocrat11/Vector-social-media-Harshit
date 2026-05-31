@@ -5,19 +5,37 @@ import { createClient } from "redis";
 import mongoose from "mongoose";
 import Conversation from "../models/conversation.model.js";
 import User from "../models/user.model.js";
+import cookie from "cookie";
 
 let io;
 
-const parseCookies = (cookieHeader) => {
-  if (!cookieHeader) return {};
-  const cookies = {};
-  cookieHeader.split(";").forEach((cookie) => {
-    const [name, ...rest] = cookie.split("=");
-    if (name) {
-      cookies[name.trim()] = rest.join("=").trim();
-    }
-  });
-  return cookies;
+export const shouldUseRedisAdapter = (redisUrl = process.env.REDIS_URL) =>
+  typeof redisUrl === "string" && redisUrl.trim().length > 0;
+
+const setupRedisAdapter = async (socketServer) => {
+  if (!shouldUseRedisAdapter()) {
+    return false;
+  }
+
+  const redisUrl = process.env.REDIS_URL.trim();
+  const pubClient = createClient({ url: redisUrl });
+  const subClient = pubClient.duplicate();
+
+  pubClient.on("error", (err) => console.error("Redis Pub Client Error", err));
+  subClient.on("error", (err) => console.error("Redis Sub Client Error", err));
+
+  try {
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+    socketServer.adapter(createAdapter(pubClient, subClient));
+    return true;
+  } catch (err) {
+    console.warn("Socket.io Redis adapter unavailable; continuing with in-memory adapter.", err);
+    await Promise.allSettled([
+      pubClient.disconnect?.(),
+      subClient.disconnect?.(),
+    ]);
+    return false;
+  }
 };
 
 export const initSocket = async (server) => {
@@ -28,49 +46,46 @@ export const initSocket = async (server) => {
     },
   });
 
-  const pubClient = createClient({ url: process.env.REDIS_URL || "redis://localhost:6379" });
-  const subClient = pubClient.duplicate();
-
-  pubClient.on("error", (err) => console.error("Redis Pub Client Error", err));
-  subClient.on("error", (err) => console.error("Redis Sub Client Error", err));
-
-  await Promise.all([pubClient.connect(), subClient.connect()]);
-
-  io.adapter(createAdapter(pubClient, subClient));
+  await setupRedisAdapter(io);
 
   io.use(async (socket, next) => {
     try {
       const cookieHeader = socket.handshake.headers.cookie;
       if (!cookieHeader) {
+        console.error("Socket authentication error: No cookies found in handshake");
         return next(new Error("Authentication error: No cookies found"));
       }
-      const cookies = parseCookies(cookieHeader);
+      const cookies = cookie.parse(cookieHeader);
       const token = cookies.token;
       if (!token) {
+        console.error("Socket authentication error: Token missing from cookies");
         return next(new Error("Authentication error: Token missing"));
       }
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.id);
       if (!user) {
+        console.error("Socket authentication error: User not found");
         return next(new Error("Authentication error: User not found"));
       }
       if ((decoded.version || 0) !== (user.tokenVersion || 0)) {
+        console.error("Socket authentication error: Token invalidated");
         return next(new Error("Authentication error: Token invalidated due to password reset"));
       }
       socket.userId = decoded.id;
       next();
-    } catch {
+    } catch (err) {
+      console.error("Socket authentication error:", err.message || err);
       return next(new Error("Authentication error: Invalid or expired token"));
     }
   });
 
   io.on("connection", (socket) => {
-
     socket.on("register", () => {
       if (socket.userId) {
         socket.join(socket.userId);
       }
     });
+
     socket.on("typing", async ({ conversationId, receiverId }) => {
       try {
         if (
@@ -79,7 +94,6 @@ export const initSocket = async (server) => {
           !mongoose.Types.ObjectId.isValid(receiverId)
         ) return;
 
-        // Verify both socket.userId and receiverId are actual participants
         const conversation = await Conversation.findOne({
           _id: conversationId,
           participants: { $all: [socket.userId, receiverId] },
