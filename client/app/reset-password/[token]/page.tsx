@@ -79,53 +79,58 @@ export default function ResetPasswordPage({
                     Enter your new password below.
                 </p>
 
-                {/* New Password */}
-                <p className="form-label">New Password</p>
-                <div className="relative">
-                    <input
-                        type={showPassword ? "text" : "password"}
-                        placeholder="Enter new password"
-                        className="form-input pr-10"
-                        value={newPassword}
-                        onChange={(e) => setNewPassword(e.target.value)}
-                    />
-                    <span
-                        className="surface-text-muted absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer"
-                        onClick={() => setShowPassword(!showPassword)}
-                    >
-                        {showPassword ? <Eye size={18} /> : <EyeOff size={18} />}
-                    </span>
-                </div>
-                <p className="text-xs surface-text-muted mt-1">
-                    Must be 6+ characters with uppercase, lowercase, and a number.
-                </p>
+                {/* ✅ Wrapped in form — Enter key now submits */}
+                <form onSubmit={handleSubmit}>
+                    {/* New Password */}
+                    <p className="form-label">New Password</p>
+                    <div className="relative">
+                        <input
+                            type={showPassword ? "text" : "password"}
+                            placeholder="Enter new password"
+                            className="form-input pr-10"
+                            value={newPassword}
+                            onChange={(e) => setNewPassword(e.target.value)}
+                        />
+                        <span
+                            className="surface-text-muted absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer"
+                            onClick={() => setShowPassword(!showPassword)}
+                        >
+                            {showPassword ? <Eye size={18} /> : <EyeOff size={18} />}
+                        </span>
+                    </div>
+                    <p className="text-xs surface-text-muted mt-1">
+                        Must be 6+ characters with uppercase, lowercase, and a number.
+                    </p>
 
-                {/* Confirm Password */}
-                <p className="form-label mt-3">Confirm Password</p>
-                <div className="relative">
-                    <input
-                        type={showConfirmPassword ? "text" : "password"}
-                        placeholder="Confirm new password"
-                        className="form-input pr-10"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                    />
-                    <span
-                        className="surface-text-muted absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer"
-                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    >
-                        {showConfirmPassword ? <Eye size={18} /> : <EyeOff size={18} />}
-                    </span>
-                </div>
+                    {/* Confirm Password */}
+                    <p className="form-label mt-3">Confirm Password</p>
+                    <div className="relative">
+                        <input
+                            type={showConfirmPassword ? "text" : "password"}
+                            placeholder="Confirm new password"
+                            className="form-input pr-10"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                        />
+                        <span
+                            className="surface-text-muted absolute right-3 top-1/2 -translate-y-1/2 cursor-pointer"
+                            onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        >
+                            {showConfirmPassword ? <Eye size={18} /> : <EyeOff size={18} />}
+                        </span>
+                    </div>
 
-                <Button
-                    disabled={loading}
-                    className={`w-full mt-4 cursor-pointer dark:text-white ${loading ? "bg-blue-400" : "bg-blue-500 hover:bg-blue-600"
+                    {/* ✅ type="submit" — no onClick needed */}
+                    <Button
+                        type="submit"
+                        disabled={loading}
+                        className={`w-full mt-4 cursor-pointer dark:text-white ${
+                            loading ? "bg-blue-400" : "bg-blue-500 hover:bg-blue-600"
                         }`}
-                    onClick={handleSubmit}
-                >
-                    {loading ? "Resetting..." : "Reset Password"}
-                </Button>
+                    >
+                        {loading ? "Resetting..." : "Reset Password"}
+                    </Button>
+                </form>
 
                 <div className="flex items-center justify-center mt-4">
                     <span
