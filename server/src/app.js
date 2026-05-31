@@ -3,6 +3,7 @@ import cors from "cors";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import csrfProtection from "./middlewares/csrf.middleware.js";
+import { apiLimiter } from "./middlewares/rateLimit.middleware.js";
 import authRouter from "./routes/auth.routes.js";
 import postRouter from "./routes/post.routes.js";
 import userRoutes from "./routes/user.routes.js";
@@ -34,6 +35,8 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
+
+app.use("/api", apiLimiter);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
