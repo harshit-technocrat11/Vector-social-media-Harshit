@@ -47,7 +47,8 @@ export const removePostById = async (postId) => {
 export const createPost = async (req, res) => {
     let imagePublicId = null;
     try {
-        const { content, intent } = req.body;
+        const { content: rawContent, intent } = req.body;
+        const content = (rawContent || "").trim();
         if (!intent || (!content && !req.file)) {
             return res.status(400).json({
                 success: false,
@@ -81,7 +82,7 @@ export const createPost = async (req, res) => {
         const post = await Post.create({ 
             author: req.user.id, 
             authorIsPrivate: req.user.isPrivate || false,
-            content: content || "", 
+            content, 
             intent, 
             image, 
             imagePublicId 
