@@ -227,6 +227,7 @@ export const toggleFollowUser = async (req, res) => {
             if (deleted) {
                 await User.updateOne({ _id: currentUserId }, { $inc: { followingCount: -1 } });
                 await User.updateOne({ _id: targetUserId }, { $inc: { followersCount: -1 } });
+                await Notification.deleteOne({ recipient: targetUserId, sender: currentUserId, type: "follow" });
             }
             return res.json({ followed: false });
         } else if (existingFollow && existingFollow.status === "pending") {
