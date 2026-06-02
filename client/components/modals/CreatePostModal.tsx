@@ -291,13 +291,13 @@ export default function CreatePostModal({ onClose, onPostCreated }: CreateModalP
 
                     <div className={cn(
                         "text-xs mt-1 text-right font-medium transition-colors",
-                        content.length >= MAX_CHARS
+                        content.trim().length >= MAX_CHARS
                             ? "text-red-500"
-                            : content.length >= 400
+                            : content.trim().length >= 400
                                 ? "text-yellow-500"
                                 : "text-foreground/40"
                     )}>
-                        {content.length} / {MAX_CHARS}
+                        {content.trim().length} / {MAX_CHARS}
                     </div>
 
                     {lastSaved && (
