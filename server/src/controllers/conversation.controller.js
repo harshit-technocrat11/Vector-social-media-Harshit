@@ -107,7 +107,83 @@ export const getUserConversations = async (req, res) => {
     let conversations = await Conversation.aggregate([
       // Match conversations for current user that have not been soft-deleted by them
       { $match: { participants: userId, deletedBy: { $ne: userId } } },
-      
+
+      // Identify the other participant(s) in each conversation
+      {
+        $addFields: {
+          otherParticipants: {
+            $filter: {
+              input: "$participants",
+              as: "p",
+              cond: { $ne: ["$$p", userId] },
+            },
+          },
+        },
+      },
+
+      // Filter: exclude conversations where current user has blocked any other participant
+      {
+        $lookup: {
+          from: "users",
+          let: { userId: userId },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$_id", "$$userId"] } } },
+            { $project: { blockedUsers: 1 } },
+          ],
+          as: "currentUserDoc",
+        },
+      },
+      {
+        $match: {
+          $expr: {
+            $eq: [
+              {
+                $size: {
+                  $filter: {
+                    input: { $ifNull: [{ $arrayElemAt: ["$currentUserDoc.blockedUsers", 0] }, []] },
+                    as: "blockedId",
+                    cond: { $in: ["$$blockedId", "$otherParticipants"] },
+                  },
+                },
+              },
+              0,
+            ],
+          },
+        },
+      },
+
+      // Filter: exclude conversations where any other participant has blocked the current user
+      {
+        $lookup: {
+          from: "users",
+          let: { others: "$otherParticipants" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $in: ["$_id", "$$others"] },
+                    { $in: [userId, { $ifNull: ["$blockedUsers", []] }] },
+                  ],
+                },
+              },
+            },
+            { $project: { _id: 1 } },
+          ],
+          as: "usersWhoBlockedMe",
+        },
+      },
+      { $match: { $expr: { $eq: [{ $size: "$usersWhoBlockedMe" }, 0] } } },
+
+      // Remove temporary block-check fields before the expensive lookups below
+      {
+        $project: {
+          currentUserDoc: 0,
+          otherParticipants: 0,
+          usersWhoBlockedMe: 0,
+        },
+      },
+
       // Lookup latest message
       {
         $lookup: {
@@ -221,22 +297,6 @@ export const getUserConversations = async (req, res) => {
       { $sort: { updatedAt: -1 } }
     ]);
 
-
-    // Filter out conversations where the other participant is blocked
-    const myBlockedIds = (req.user.blockedUsers || []).map(id => id.toString());
-    const otherIds = conversations.map(convo => {
-      const other = convo.participants.find(p => p._id.toString() !== userId.toString());
-      return other?._id.toString();
-    }).filter(Boolean);
-    const usersWhoBlockedMe = await User.find({ _id: { $in: otherIds }, blockedUsers: userId }).select("_id");
-    const blockedByIds = new Set(usersWhoBlockedMe.map(u => u._id.toString()));
-
-    conversations = conversations.filter(convo => {
-      const other = convo.participants.find(p => p._id.toString() !== userId.toString());
-      if (!other) return false;
-      const otherId = other._id.toString();
-      return !myBlockedIds.includes(otherId) && !blockedByIds.has(otherId);
-    });
 
     res.json(conversations);
 
