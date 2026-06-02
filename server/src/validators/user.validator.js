@@ -12,7 +12,7 @@ export const registerSchema = z.object({
   phoneNumber: z.preprocess(
     (value) =>
       typeof value === "string"
-        ? value.replace(/[\s\-.() ]+/g, "")
+        ? value.replace(/[\s\u00A0\-.()+]/g, "")
         : value,
     z
       .string({ required_error: "Please enter your phone number!" })
