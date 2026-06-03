@@ -754,7 +754,6 @@ export const searchUsers = async (req, res) => {
         const users = await User.find({
             $text: { $search: query },
             _id: { $nin: excludeIds },
-            searchable: true,
             ...cursorFilter,
         })
             .sort({ _id: -1 })
@@ -786,7 +785,7 @@ export const searchUsers = async (req, res) => {
         }));
 
         const privateNotVisible = await User.find({
-            searchable: false,
+            isPrivate: true,
             _id: { $nin: [...Array.from(followingUserIds), currentUserId] },
         }).select("_id").lean();
 
