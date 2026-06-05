@@ -942,6 +942,20 @@ export const blockUser = async (req, res) => {
                 ),
             ]);
 
+            // Remove mutual shares and decrement sharesCount accurately
+            await Promise.all([
+                Post.updateMany(
+                    { author: currentUserId, sharedBy: targetUserId },
+                    { $pull: { sharedBy: targetUserId }, $inc: { sharesCount: -1 } },
+                    { session }
+                ),
+                Post.updateMany(
+                    { author: targetUserId, sharedBy: currentUserId },
+                    { $pull: { sharedBy: currentUserId }, $inc: { sharesCount: -1 } },
+                    { session }
+                ),
+            ]);
+
             // Count and remove mutual comments to keep commentsCount accurate
             [blockedOnCurrentCounts, blockerOnTargetCounts] = await Promise.all([
                 Comment.aggregate([
