@@ -318,6 +318,7 @@ export default function CreatePostModal({ onClose, onPostCreated }: CreateModalP
                     <div className="relative">
                         <textarea
                             maxLength={MAX_CHARS}
+                            autoComplete="off"
                             placeholder="What's on your mind? Share your thoughts..."
                             value={content}
                             onChange={(e) => {
