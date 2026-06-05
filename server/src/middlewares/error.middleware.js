@@ -1,9 +1,9 @@
-const errorHandler = (err, req, res) => {
-  console.error(err.stack);
+const errorHandler = (err, req, res, next) => {
+  void next;
 
-  const statusCode = err.statusCode || 500;
+  const statusCode = err?.statusCode || 500;
 
-  res.status(statusCode).json({
+  return res.status(statusCode).json({
     success: false,
     message: statusCode === 500
       ? "Server error"
