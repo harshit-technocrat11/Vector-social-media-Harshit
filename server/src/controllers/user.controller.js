@@ -662,10 +662,11 @@ export const getAllUsers = asyncHandler(async (req, res) => {
 export const getSuggestedUsers = asyncHandler(async (req, res) => {
         const currentUserId = req.user._id || req.user.id;
         
-        const followings = await Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean();
+        const [followings, blockers] = await Promise.all([
+            Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean(),
+            User.find({ blockedUsers: currentUserId }).select("_id"),
+        ]);
         const followingIds = followings.map(f => f.following);
-
-        const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
         const blockerIds = blockers.map(u => u._id);
         const blockedIds = req.user.blockedUsers || [];
         const excludeIds = [...blockedIds, ...blockerIds, currentUserId, ...followingIds];
@@ -713,7 +714,9 @@ export const searchUsers = asyncHandler(async (req, res) => {
         const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 50);
 
         const currentUserId = req.user._id || req.user.id;
-        const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+        const [blockers] = await Promise.all([
+            User.find({ blockedUsers: currentUserId }).select("_id"),
+        ]);
         const blockerIds = blockers.map(u => u._id);
         const blockedIds = req.user.blockedUsers || [];
         const excludeIds = [...blockedIds, ...blockerIds, currentUserId];

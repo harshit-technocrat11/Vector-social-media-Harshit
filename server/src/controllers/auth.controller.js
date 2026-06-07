@@ -138,10 +138,12 @@ export const getMe = asyncHandler(async (req, res) => {
         }
         const user = req.user;
 
-        const followings = await Follow.find({ follower: user._id, status: "accepted" }).select("following").lean();
-        const followers = await Follow.find({ following: user._id, status: "accepted" }).select("follower").lean();
-        const followRequests = await Follow.find({ following: user._id, status: "pending" }).select("follower").lean();
-
+       
+    const [followings, followers, followRequests] = await Promise.all([
+        Follow.find({ follower: user._id, status: "accepted" }).select("following").lean(),
+        Follow.find({ following: user._id, status: "accepted" }).select("follower").lean(),
+        Follow.find({ following: user._id, status: "pending" }).select("follower").lean(),
+    ]);
         return res.status(200).json({
             success: true,
             user: {

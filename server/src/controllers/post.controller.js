@@ -112,7 +112,10 @@ export const getPosts = asyncHandler(async (req, res) => {
         let excludeUserIds = [];
         if (req.user) {
             const currentUserId = req.user._id || req.user.id;
-            const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+            const [blockers, followingDocs] = await Promise.all([
+                User.find({ blockedUsers: currentUserId }).select("_id"),
+                Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean(),
+            ]);
             const blockerIds = blockers.map(u => u._id);
             const blockedIds = req.user.blockedUsers || [];
             excludeUserIds = [...blockedIds, ...blockerIds];
@@ -121,7 +124,6 @@ export const getPosts = asyncHandler(async (req, res) => {
                 filter = { author: { $nin: excludeUserIds } };
             }
 
-            const followingDocs = await Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean();
             const followingIds = followingDocs.map(f => f.following);
             filter.$or = [
                 { authorIsPrivate: { $ne: true } },
@@ -183,7 +185,10 @@ export const searchPosts = asyncHandler(async (req, res) => {
         
         if (req.user) {
             const currentUserId = req.user._id || req.user.id;
-            const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+            const [blockers, followingDocs] = await Promise.all([
+                User.find({ blockedUsers: currentUserId }).select("_id"),
+                Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean(),
+            ]);
             const blockerIds = blockers.map(u => u._id);
             const blockedIds = req.user.blockedUsers || [];
             excludeUserIds = [...blockedIds, ...blockerIds];
@@ -192,7 +197,6 @@ export const searchPosts = asyncHandler(async (req, res) => {
                 filter.author = { $nin: excludeUserIds };
             }
 
-            const followingDocs = await Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean();
             const followingIds = followingDocs.map(f => f.following);
             filter.$or = [
                 { authorIsPrivate: { $ne: true } },
@@ -657,7 +661,10 @@ export const getTopPostsOfWeek = asyncHandler(async (req, res) => {
 
         if (req.user) {
             const currentUserId = req.user._id || req.user.id;
-            const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+            const [blockers, followingDocsWeek] = await Promise.all([
+                User.find({ blockedUsers: currentUserId }).select("_id"),
+                Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean(),
+            ]);
             const blockerIds = blockers.map((user) => user._id);
             const blockedIds = req.user.blockedUsers || [];
             excludeUserIds = [...blockedIds, ...blockerIds];
@@ -668,8 +675,8 @@ export const getTopPostsOfWeek = asyncHandler(async (req, res) => {
                     author: { $nin: excludeUserIds },
                 };
             }
-            const followingDocsWeek = await Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean();
             const followingIdsWeek = followingDocsWeek.map(f => f.following);
+            
             filter.$or = [
                 { authorIsPrivate: { $ne: true } },
                 { author: { $in: [...followingIdsWeek, currentUserId] } }
@@ -747,7 +754,10 @@ export const getTopPostsOfMonth = asyncHandler(async (req, res) => {
 
         if (req.user) {
             const currentUserId = req.user._id || req.user.id;
-            const blockers = await User.find({ blockedUsers: currentUserId }).select("_id");
+            const [blockers, followingDocsMonth] = await Promise.all([
+                User.find({ blockedUsers: currentUserId }).select("_id"),
+                Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean(),
+            ]);
             const blockerIds = blockers.map((user) => user._id);
             const blockedIds = req.user.blockedUsers || [];
             excludeUserIds = [...blockedIds, ...blockerIds];
@@ -758,7 +768,6 @@ export const getTopPostsOfMonth = asyncHandler(async (req, res) => {
                     author: { $nin: excludeUserIds },
                 };
             }
-            const followingDocsMonth = await Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean();
             const followingIdsMonth = followingDocsMonth.map(f => f.following);
             filter.$or = [
                 { authorIsPrivate: { $ne: true } },
