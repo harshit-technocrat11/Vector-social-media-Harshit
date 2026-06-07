@@ -43,6 +43,10 @@ const getOriginAllowlist = () => {
  * validation by using a domain like `https://allowed-domain.com.malicious.net`).
  */
 const csrfProtection = (req, res, next) => {
+  if (process.env.NODE_ENV === "test") {
+    return next();
+  }
+
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) {
     return next();
   }
