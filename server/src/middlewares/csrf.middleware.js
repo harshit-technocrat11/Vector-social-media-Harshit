@@ -51,13 +51,10 @@ const csrfProtection = (req, res, next) => {
   const referer = req.headers.referer;
 
   if (!origin && !referer) {
-    if (process.env.NODE_ENV === "production") {
-      return res.status(403).json({
-        success: false,
-        message: "CSRF validation failed: missing Origin header",
-      });
-    }
-    return next();
+    return res.status(403).json({
+      success: false,
+      message: "CSRF validation failed: missing Origin header",
+    });
   }
 
   const sourceString = origin || referer;
