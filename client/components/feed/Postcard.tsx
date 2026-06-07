@@ -151,9 +151,12 @@ export default function PostCard({ post, setPost }: PostCardProps) {
                 );
             }
 
-            // ✅ API call — read response to reconcile optimistic state
-            const res = await axios.put<{ liked: boolean; likesCount: number }>(
-                `${BACKEND_URL}/api/posts/${post._id}/like`,
+            // ✅ API call — use explicit like/unlike endpoint based on current state
+            const endpoint = isLiked
+                ? `${BACKEND_URL}/api/posts/${post._id}/unlike`
+                : `${BACKEND_URL}/api/posts/${post._id}/like`;
+            const res = await axios.post<{ liked: boolean; likesCount: number }>(
+                endpoint,
                 {},
                 { withCredentials: true }
             );
