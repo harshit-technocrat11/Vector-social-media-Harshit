@@ -369,98 +369,129 @@ export const updatePost = async (req, res) => {
     }
 };
 
-export const toggleLike = asyncHandler(async (req, res) => {
-        const postId = req.params.id;
-        const userId = req.user.id;
+const likeBlockCheck = async (postId, userId, postAuthorId) => {
+    if (postAuthorId.toString() === userId) return null;
+    const [authorUser, currentUser] = await Promise.all([
+        User.findById(postAuthorId).select("blockedUsers"),
+        User.findById(userId).select("blockedUsers"),
+    ]);
+    const isBlocked = currentUser?.blockedUsers?.some(
+        id => id.toString() === postAuthorId.toString()
+    ) || authorUser?.blockedUsers?.some(
+        id => id.toString() === userId
+    );
+    if (isBlocked) {
+        return { success: false, message: "Action forbidden due to block status" };
+    }
+    return null;
+};
 
-        if (!mongoose.Types.ObjectId.isValid(postId)) {
-            return res.status(400).json({ success: false, message: "Invalid post ID format" });
+export const likePost = asyncHandler(async (req, res) => {
+    const postId = req.params.id;
+    const userId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+        return res.status(400).json({ success: false, message: "Invalid post ID format" });
+    }
+
+    const post = await Post.findById(postId).select("author");
+    if (!post) {
+        return res.status(404).json({ success: false });
+    }
+
+    const blockError = await likeBlockCheck(postId, userId, post.author);
+    if (blockError) {
+        return res.status(403).json(blockError);
+    }
+
+    const result = await Post.updateOne(
+        { _id: postId, likes: { $ne: userId } },
+        { $addToSet: { likes: userId } }
+    );
+
+    const liked = result.modifiedCount > 0;
+
+    if (liked && post.author.toString() !== userId) {
+        const [currentAuthor, freshCurrent] = await Promise.all([
+            User.findById(post.author).select("blockedUsers"),
+            User.findById(userId).select("blockedUsers"),
+        ]);
+        const stillBlocked = freshCurrent?.blockedUsers?.some(id => id.toString() === post.author.toString()) ||
+                            currentAuthor?.blockedUsers?.some(id => id.toString() === userId);
+        if (stillBlocked) {
+            await Post.updateOne({ _id: postId }, { $pull: { likes: userId } });
+            return res.json({ success: true, likesCount: 0, liked: false });
         }
 
-        const post = await Post.findById(postId).select("author");
-        if (!post) {
-            return res.status(404).json({ success: false });
-        }
-
-        // Check block status between the requester and the post author
-        if (post.author.toString() !== userId) {
-            const [authorUser, currentUser] = await Promise.all([
-                User.findById(post.author).select("blockedUsers"),
-                User.findById(userId).select("blockedUsers"),
-            ]);
-            const isBlocked = currentUser?.blockedUsers?.some(
-                id => id.toString() === post.author.toString()
-            ) || authorUser?.blockedUsers?.some(
-                id => id.toString() === userId
-            );
-            if (isBlocked) {
-                return res.status(403).json({ success: false, message: "Action forbidden due to block status" });
-            }
-        }
-
-        // Atomically determine whether the user was added or removed
-        const addResult = await Post.updateOne(
-            { _id: postId, likes: { $ne: userId } },
-            { $addToSet: { likes: userId } }
-        );
-
-        let liked = addResult.modifiedCount > 0;
-
-        if (!liked) {
-            await Post.updateOne(
-                { _id: postId, likes: userId },
-                { $pull: { likes: userId } }
-            );
-            await Notification.deleteOne({ recipient: post.author, sender: userId, type: "like", post: postId });
-        }
-
-        // Re-verify block status — either side may have blocked since the pre-check
-        if (liked && post.author.toString() !== userId) {
-            const [currentAuthor, freshCurrent] = await Promise.all([
-                User.findById(post.author).select("blockedUsers"),
-                User.findById(userId).select("blockedUsers"),
-            ]);
-            const stillBlocked = freshCurrent?.blockedUsers?.some(id => id.toString() === post.author.toString()) ||
-                                currentAuthor?.blockedUsers?.some(id => id.toString() === userId);
-            if (stillBlocked) {
-                await Post.updateOne({ _id: postId }, { $pull: { likes: userId } });
-                liked = false;
-            }
-        }
-
-        const updatedPost = await Post.findById(postId).select("likes");
-
-        if (liked && post.author.toString() !== userId) {
-            const notification = await Notification.findOneAndUpdate(
-                {
+        const notification = await Notification.findOneAndUpdate(
+            {
+                recipient: post.author,
+                sender: userId,
+                type: "like",
+                post: postId,
+            },
+            {
+                $setOnInsert: {
                     recipient: post.author,
                     sender: userId,
                     type: "like",
                     post: postId,
                 },
-                {
-                    $setOnInsert: {
-                        recipient: post.author,
-                        sender: userId,
-                        type: "like",
-                        post: postId,
-                    },
-                },
-                { upsert: true, new: true }
-            );
+            },
+            { upsert: true, new: true }
+        );
 
-            getIO().to(post.author.toString()).emit("notification:new", {
-                notificationId: notification._id,
-                type: notification.type,
-            });
-        }
-
-        res.json({
-            success: true,
-            likesCount: updatedPost.likes.length,
-            liked,
+        getIO().to(post.author.toString()).emit("notification:new", {
+            notificationId: notification._id,
+            type: notification.type,
         });
-    
+    }
+
+    const updatedPost = await Post.findById(postId).select("likes");
+
+    res.json({
+        success: true,
+        likesCount: updatedPost.likes.length,
+        liked,
+    });
+});
+
+export const unlikePost = asyncHandler(async (req, res) => {
+    const postId = req.params.id;
+    const userId = req.user.id;
+
+    if (!mongoose.Types.ObjectId.isValid(postId)) {
+        return res.status(400).json({ success: false, message: "Invalid post ID format" });
+    }
+
+    const post = await Post.findById(postId).select("author");
+    if (!post) {
+        return res.status(404).json({ success: false });
+    }
+
+    const blockError = await likeBlockCheck(postId, userId, post.author);
+    if (blockError) {
+        return res.status(403).json(blockError);
+    }
+
+    const result = await Post.updateOne(
+        { _id: postId, likes: userId },
+        { $pull: { likes: userId } }
+    );
+
+    const unliked = result.modifiedCount > 0;
+
+    if (unliked) {
+        await Notification.deleteOne({ recipient: post.author, sender: userId, type: "like", post: postId });
+    }
+
+    const updatedPost = await Post.findById(postId).select("likes");
+
+    res.json({
+        success: true,
+        likesCount: updatedPost.likes.length,
+        liked: false,
+    });
 });
 
 export const getPostsByUser = asyncHandler(async (req, res) => {
