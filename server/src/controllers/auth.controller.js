@@ -226,23 +226,19 @@ export const forgotPassword = asyncHandler(async (req, res) => {
 
         const { email } = validation.data;
 
-        const user = await User.findOne({ email });
-        if (!user) {
-            return res.status(200).json({ 
-                success: true, 
-                message: "Password reset email sent successfully",
-            });
-        }
-
         const resetToken = crypto.randomBytes(32).toString('hex');
         const hashedResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
         const resetTokenExpiry = Date.now() + 15 * 60 * 1000;
 
-        user.resetToken = hashedResetToken;
-        user.resetTokenExpiry = resetTokenExpiry;
-        await user.save({ validateBeforeSave: false });
+        const result = await User.findOneAndUpdate(
+            { email, $or: [{ resetTokenExpiry: { $lt: Date.now() } }, { resetToken: { $exists: false } }] },
+            { $set: { resetToken: hashedResetToken, resetTokenExpiry } },
+            { new: true }
+        );
 
-        await sendResetEmail(user.email, resetToken);
+        if (result) {
+            await sendResetEmail(email, resetToken);
+        }
 
         return res.status(200).json({
             success: true,
@@ -262,25 +258,27 @@ export const resetPassword = asyncHandler(async (req, res) => {
 
         const { resetToken, newPassword } = validation.data;
         const hashedResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-        const user = await User.findOne({
-            resetToken: hashedResetToken,
-            resetTokenExpiry: { $gt: Date.now() }
-        });
+        const result = await User.findOneAndUpdate(
+            {
+                resetToken: hashedResetToken,
+                resetTokenExpiry: { $gt: Date.now() },
+            },
+            {
+                $set: { password: hashedPassword },
+                $unset: { resetToken: "", resetTokenExpiry: "" },
+                $inc: { tokenVersion: 1 }
+            },
+            { new: true }
+        );
 
-        if (!user) {
+        if (!result) {
             return res.status(400).json({ 
                 success: false, 
-                message: "Invalid or expired reset token!" 
+                message: "Invalid or expired reset token" 
             });
         }
-
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        user.password = hashedPassword;
-        user.resetToken = undefined;
-        user.resetTokenExpiry = undefined;
-        user.tokenVersion = (user.tokenVersion || 0) + 1;
-        await user.save();
 
         return res.status(200).json({
             success: true,

@@ -27,6 +27,7 @@ const buildBlockExclusion = async (reqUser) => {
 };
 
 const buildVisibilityFilter = (currentUserId, excludeUserIds, filter) => {
+  filter.isFlaggedForReview = { $ne: true };
   if (excludeUserIds.length > 0) {
     filter.author = { $nin: excludeUserIds };
   }
@@ -95,6 +96,7 @@ const getTopPosts = (daysAgo, maxResults) => async (req, res) => {
       await addPrivacyOrClause(currentUserId, filter);
     } else {
       filter.authorIsPrivate = { $ne: true };
+      filter.isFlaggedForReview = { $ne: true };
     }
 
     const posts = await Post.aggregate([
@@ -251,6 +253,7 @@ export const getPosts = asyncHandler(async (req, res) => {
             sendPaginatedResponse(res, addBookmarkMeta(posts, req.user), limit);
         } else {
             filter.authorIsPrivate = { $ne: true };
+            filter.isFlaggedForReview = { $ne: true };
             const cursorErr = applyCursorPagination(filter, cursor);
             if (cursorErr.error) return res.status(400).json({ success: false, message: cursorErr.error });
 
@@ -291,6 +294,7 @@ export const searchPosts = asyncHandler(async (req, res) => {
             sendPaginatedResponse(res, addBookmarkMeta(posts, req.user), limit);
         } else {
             filter.authorIsPrivate = { $ne: true };
+            filter.isFlaggedForReview = { $ne: true };
             const cursorErr = applyCursorPagination(filter, cursor);
             if (cursorErr.error) return res.status(400).json({ success: false, message: cursorErr.error });
 
@@ -621,7 +625,7 @@ export const getPostsByUser = asyncHandler(async (req, res) => {
         const cursor = req.query.cursor;
         const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), MAX_LIMIT);
 
-        let postFilter = { author: userId };
+        let postFilter = { author: userId, isFlaggedForReview: { $ne: true } };
         if (cursor) {
             if (mongoose.Types.ObjectId.isValid(cursor)) {
                 postFilter._id = { $lt: cursor };
@@ -681,6 +685,10 @@ export const getSinglePost = asyncHandler(async (req, res) => {
                     : { path: "likes", select: "username name avatar _id" }
             );
         if (!post) {
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        if (post.isFlaggedForReview) {
             return res.status(404).json({ message: "Post not found" });
         }
 
@@ -847,43 +855,40 @@ export const getBookmarks = asyncHandler(async (req, res) => {
           .json({ success: false, message: "Invalid cursor" });
       }
     }
-    const filter = { _id: { $in: bookmarkIds } };
+    const filter = { _id: { $in: bookmarkIds }, isFlaggedForReview: { $ne: true } };
     if (cursor) {
-      filter._id.$lt = new mongoose.Types.ObjectId(cursor);
+      filter._id = { $in: bookmarkIds, $lt: new mongoose.Types.ObjectId(cursor) };
     }
+
+    const currentUserId = req.user._id?.toString() || req.user.id?.toString();
+    const blockedIds = req.user.blockedUsers || [];
+    const blockerDocs = await User.find({ blockedUsers: currentUserId }).select("_id").lean();
+    const blockerIds = blockerDocs.map(u => u._id);
+    const excludeUserIds = [...blockedIds, ...blockerIds];
+
+    if (excludeUserIds.length > 0) {
+      filter.author = { $nin: excludeUserIds };
+    }
+
+    const followingDocs = await Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean();
+    const followingIds = followingDocs.map(f => f.following);
+
+    filter.$or = [
+      { authorIsPrivate: { $ne: true } },
+      { author: { $in: [...followingIds, currentUserId] } }
+    ];
+
     const posts = await Post.find(filter)
       .sort({ _id: -1 })
       .limit(limit + 1)
       .populate("author", "username name surname avatar")
       .populate("likes", "username name avatar _id")
       .lean();
+
     const hasNextPage = posts.length > limit;
     const pagePosts = hasNextPage ? posts.slice(0, limit) : posts;
 
-    const currentUserId = req.user._id?.toString() || req.user.id?.toString();
-    const blockedIds = new Set((req.user.blockedUsers || []).map(id => id.toString()));
-    const blockerDocs = await User.find({ blockedUsers: currentUserId }).select("_id").lean();
-    blockerDocs.forEach(u => blockedIds.add(u._id.toString()));
-
-    const followingDocs = await Follow.find({ follower: currentUserId, status: "accepted" }).select("following").lean();
-    const followingIds = new Set(followingDocs.map(f => f.following.toString()));
-
-    const authorIds = [...new Set(pagePosts.map(p => p.author?._id?.toString()).filter(Boolean))];
-    const privateNotFollowed = await User.find({
-      _id: { $in: authorIds, $nin: [...followingIds, currentUserId] },
-      isPrivate: true,
-    }).select("_id").lean();
-    const privateNotFollowedIds = new Set(privateNotFollowed.map(u => u._id.toString()));
-
-    const filteredPosts = pagePosts.filter(p => {
-      const authorId = p.author?._id?.toString();
-      if (!authorId) return false;
-      if (blockedIds.has(authorId)) return false;
-      if (privateNotFollowedIds.has(authorId)) return false;
-      return true;
-    });
-
-    const postsWithMeta = filteredPosts.map((p) => ({
+    const postsWithMeta = pagePosts.map((p) => ({
       ...p,
       isBookmarked: true,
     }));

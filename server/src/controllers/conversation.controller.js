@@ -357,8 +357,10 @@ export const deleteConversation = asyncHandler(async (req, res) => {
         await Message.deleteMany({ conversation: convo._id });
         await Conversation.deleteOne({ _id: convo._id });
 
-        getIO().to(convo._id.toString()).emit("conversation:deleted", {
-            conversationId: convo._id,
+        convo.participants.forEach((pid) => {
+            getIO().to(pid.toString()).emit("conversation:deleted", {
+                conversationId: convo._id,
+            });
         });
     } else {
         const otherParticipants = convo.participants.filter(

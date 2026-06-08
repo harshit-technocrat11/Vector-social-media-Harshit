@@ -166,7 +166,16 @@ export const updateProfile = asyncHandler(async (req, res) => {
                 });
             }
             if (isPrivate === false && user.isPrivate === true) {
-                await Follow.deleteMany({ following: userId, status: "pending" });
+                const result = await Follow.updateMany(
+                    { following: userId, status: "pending" },
+                    { $set: { status: "accepted" } }
+                );
+                if (result.modifiedCount > 0) {
+                    await User.updateOne(
+                        { _id: userId },
+                        { $inc: { followersCount: result.modifiedCount } }
+                    );
+                }
             }
             if (user.isPrivate !== isPrivate) {
                 user.isPrivate = isPrivate;
@@ -240,54 +249,52 @@ export const toggleFollowUser = async (req, res) => {
             }
             return res.json({ requested: false, message: "Follow request cancelled" });
         } else {
-            // New follow: use upsert so concurrent requests collapse on the unique index
-            // rather than racing to insert and surfacing a duplicate-key 500.
-            // Create the notification first, then upsert the Follow — if notification fails,
-            // the Follow upsert does not proceed, ensuring atomicity without a transaction.
-            if (targetUser.isPrivate) {
-                const notification = await Notification.create({
-                    recipient: targetUser._id,
-                    sender: req.user._id,
-                    type: "follow_request",
-                });
-                const result = await Follow.findOneAndUpdate(
-                    { follower: currentUserId, following: targetUserId },
-                    { $setOnInsert: { follower: currentUserId, following: targetUserId, status: "pending" } },
-                    { upsert: true, returnDocument: 'after', includeResultMetadata: true }
-                );
-                if (result.lastErrorObject?.upserted) {
+            // New follow: re-read isPrivate fresh to avoid a race with updateProfile
+            // toggling the account from private to public between the initial fetch
+            // and the upsert below.
+            const targetUserNow = await User.findById(targetUserId).select("isPrivate").lean();
+            const result = await Follow.findOneAndUpdate(
+                { follower: currentUserId, following: targetUserId },
+                {
+                    $setOnInsert: {
+                        follower: currentUserId,
+                        following: targetUserId,
+                        status: targetUserNow.isPrivate ? "pending" : "accepted",
+                    },
+                },
+                { upsert: true, returnDocument: 'after', includeResultMetadata: true }
+            );
+            if (result.lastErrorObject?.upserted) {
+                if (targetUserNow.isPrivate) {
+                    const notification = await Notification.create({
+                        recipient: targetUser._id,
+                        sender: req.user._id,
+                        type: "follow_request",
+                    });
                     getIO().to(targetUser._id.toString()).emit("notification:new", {
                         notificationId: notification._id,
                         type: notification.type,
                     });
-                } else {
-                    await Notification.findByIdAndDelete(notification._id);
-                }
-                return res.json({ requested: true, message: "Follow request sent" });
-            } else {
-                // Public account — immediate follow
-                const notification = await Notification.create({
-                    recipient: targetUser._id,
-                    sender: req.user._id,
-                    type: "follow",
-                });
-                const result = await Follow.findOneAndUpdate(
-                    { follower: currentUserId, following: targetUserId },
-                    { $setOnInsert: { follower: currentUserId, following: targetUserId, status: "accepted" } },
-                    { upsert: true, returnDocument: 'after', includeResultMetadata: true }
-                );
-                if (result.lastErrorObject?.upserted) {
-                    await User.updateOne({ _id: currentUserId }, { $inc: { followingCount: 1 } });
-                    await User.updateOne({ _id: targetUserId }, { $inc: { followersCount: 1 } });
-                    getIO().to(targetUser._id.toString()).emit("notification:new", {
-                        notificationId: notification._id,
-                        type: notification.type,
-                    });
-                } else {
-                    await Notification.findByIdAndDelete(notification._id);
-                }
-                return res.json({ followed: true });
+                    return res.json({ requested: true, message: "Follow request sent" });
             }
+            await User.updateOne({ _id: currentUserId }, { $inc: { followingCount: 1 } });
+            await User.updateOne({ _id: targetUserId }, { $inc: { followersCount: 1 } });
+            const notification = await Notification.create({
+                recipient: targetUser._id,
+                sender: req.user._id,
+                type: "follow",
+            });
+            getIO().to(targetUser._id.toString()).emit("notification:new", {
+                notificationId: notification._id,
+                type: notification.type,
+            });
+            return res.json({ followed: true });
+        }
+        // Follow already existed from concurrent request — return based on actual status
+        if (result.value?.status === "pending") {
+            return res.json({ requested: true, message: "Follow request sent" });
+        }
+            return res.json({ followed: true });
         }
     } catch (error) {
         // E11000: concurrent request already inserted the same Follow doc — not an error for the client
@@ -804,175 +811,205 @@ export const blockUser = async (req, res) => {
     let blockerOnTargetCounts = [];
     let alreadyBlocked = false;
 
-    try {
-        await session.withTransaction(async () => {
-            const currentUser = await User.findById(currentUserId).session(session);
-            const targetUser = await User.findById(targetUserId).session(session);
+    const performBlock = async (opts = {}) => {
+        const currentUser = await User.findById(currentUserId, null, opts);
+        const targetUser = await User.findById(targetUserId, null, opts);
 
-            if (!currentUser || !targetUser) {
-                const err = new Error("User not found");
-                err.status = 404;
-                throw err;
-            }
+        if (!currentUser || !targetUser) {
+            const err = new Error("User not found");
+            err.status = 404;
+            throw err;
+        }
 
-            alreadyBlocked = currentUser.blockedUsers?.some(
-                (id) => id.toString() === targetUserId
-            );
-            if (alreadyBlocked) return;
+        alreadyBlocked = currentUser.blockedUsers?.some(
+            (id) => id.toString() === targetUserId
+        );
+        if (alreadyBlocked) return;
 
-            // Record the block atomically — $addToSet is idempotent
-            await User.updateOne(
-                { _id: currentUserId },
-                { $addToSet: { blockedUsers: targetUserId } },
-                { session }
-            );
+        // Record the block atomically — $addToSet is idempotent
+        await User.updateOne(
+            { _id: currentUserId },
+            { $addToSet: { blockedUsers: targetUserId } },
+            opts
+        );
 
-            // Count active follow relationships before deleting them so follower
-            // and following counts can be decremented accurately
-            const [fwd, rev] = await Promise.all([
-                Follow.findOne(
-                    { follower: currentUserId, following: targetUserId, status: "accepted" },
-                    null,
-                    { session }
-                ),
-                Follow.findOne(
-                    { follower: targetUserId, following: currentUserId, status: "accepted" },
-                    null,
-                    { session }
-                ),
-            ]);
-
-            if (fwd) {
-                await Promise.all([
-                    User.updateOne({ _id: currentUserId }, { $inc: { followingCount: -1 } }, { session }),
-                    User.updateOne({ _id: targetUserId }, { $inc: { followersCount: -1 } }, { session }),
-                ]);
-            }
-            if (rev) {
-                await Promise.all([
-                    User.updateOne({ _id: targetUserId }, { $inc: { followingCount: -1 } }, { session }),
-                    User.updateOne({ _id: currentUserId }, { $inc: { followersCount: -1 } }, { session }),
-                ]);
-            }
-
-            await Follow.deleteMany(
-                {
-                    $or: [
-                        { follower: currentUserId, following: targetUserId },
-                        { follower: targetUserId, following: currentUserId },
-                    ],
-                },
-                { session }
-            );
-
-            // Remove notifications between the two users
-            await Notification.deleteMany(
-                {
-                    $or: [
-                        { recipient: currentUserId, sender: targetUserId },
-                        { recipient: targetUserId, sender: currentUserId },
-                    ],
-                },
-                { session }
-            );
-
-            // Delete shared conversations and their messages
-            const conversations = await Conversation.find(
-                { participants: { $all: [currentUserId, targetUserId] } },
+        // Count active follow relationships before deleting them so follower
+        // and following counts can be decremented accurately
+        const [fwd, rev] = await Promise.all([
+            Follow.findOne(
+                { follower: currentUserId, following: targetUserId, status: "accepted" },
                 null,
-                { session }
-            );
-            const conversationIds = conversations.map((c) => c._id);
-            if (conversationIds.length > 0) {
-                await Message.deleteMany({ conversation: { $in: conversationIds } }, { session });
-                await Conversation.deleteMany({ _id: { $in: conversationIds } }, { session });
-            }
+                opts
+            ),
+            Follow.findOne(
+                { follower: targetUserId, following: currentUserId, status: "accepted" },
+                null,
+                opts
+            ),
+        ]);
 
-            // Gather post IDs for like/bookmark/comment cleanup
-            const [cPosts, tPosts] = await Promise.all([
-                Post.find({ author: currentUserId }, "_id", { session }).lean(),
-                Post.find({ author: targetUserId }, "_id", { session }).lean(),
-            ]);
-            currentUserPostIds = cPosts.map((p) => p._id);
-            targetUserPostIds = tPosts.map((p) => p._id);
-
-            // Remove mutual likes
+        if (fwd) {
             await Promise.all([
-                Post.updateMany(
-                    { author: currentUserId },
-                    { $pull: { likes: targetUserId } },
-                    { session }
-                ),
-                Post.updateMany(
-                    { author: targetUserId },
-                    { $pull: { likes: currentUserId } },
-                    { session }
-                ),
+                User.updateOne({ _id: currentUserId }, { $inc: { followingCount: -1 } }, opts),
+                User.updateOne({ _id: targetUserId }, { $inc: { followersCount: -1 } }, opts),
             ]);
-
-            // Remove mutual shares and decrement sharesCount accurately
+        }
+        if (rev) {
             await Promise.all([
-                Post.updateMany(
-                    { author: currentUserId, sharedBy: targetUserId },
-                    { $pull: { sharedBy: targetUserId }, $inc: { sharesCount: -1 } },
-                    { session }
-                ),
-                Post.updateMany(
-                    { author: targetUserId, sharedBy: currentUserId },
-                    { $pull: { sharedBy: currentUserId }, $inc: { sharesCount: -1 } },
-                    { session }
-                ),
+                User.updateOne({ _id: targetUserId }, { $inc: { followingCount: -1 } }, opts),
+                User.updateOne({ _id: currentUserId }, { $inc: { followersCount: -1 } }, opts),
             ]);
+        }
 
-            // Count and remove mutual comments to keep commentsCount accurate
+        await Follow.deleteMany(
+            {
+                $or: [
+                    { follower: currentUserId, following: targetUserId },
+                    { follower: targetUserId, following: currentUserId },
+                ],
+            },
+            opts
+        );
+
+        // Remove notifications between the two users
+        await Notification.deleteMany(
+            {
+                $or: [
+                    { recipient: currentUserId, sender: targetUserId },
+                    { recipient: targetUserId, sender: currentUserId },
+                ],
+            },
+            opts
+        );
+
+        // Delete shared conversations and their messages
+        const conversations = await Conversation.find(
+            { participants: { $all: [currentUserId, targetUserId] } },
+            null,
+            opts
+        );
+        const conversationIds = conversations.map((c) => c._id);
+        if (conversationIds.length > 0) {
+            await Message.deleteMany({ conversation: { $in: conversationIds } }, opts);
+            await Conversation.deleteMany({ _id: { $in: conversationIds } }, opts);
+        }
+
+        // Gather post IDs for like/bookmark/comment cleanup
+        const [cPosts, tPosts] = await Promise.all([
+            Post.find({ author: currentUserId }, "_id", opts).lean(),
+            Post.find({ author: targetUserId }, "_id", opts).lean(),
+        ]);
+        currentUserPostIds = cPosts.map((p) => p._id);
+        targetUserPostIds = tPosts.map((p) => p._id);
+
+        // Remove mutual likes
+        await Promise.all([
+            Post.updateMany(
+                { author: currentUserId },
+                { $pull: { likes: targetUserId } },
+                opts
+            ),
+            Post.updateMany(
+                { author: targetUserId },
+                { $pull: { likes: currentUserId } },
+                opts
+            ),
+        ]);
+
+        // Remove mutual shares and decrement sharesCount accurately
+        await Promise.all([
+            Post.updateMany(
+                { author: currentUserId, sharedBy: targetUserId },
+                { $pull: { sharedBy: targetUserId }, $inc: { sharesCount: -1 } },
+                opts
+            ),
+            Post.updateMany(
+                { author: targetUserId, sharedBy: currentUserId },
+                { $pull: { sharedBy: currentUserId }, $inc: { sharesCount: -1 } },
+                opts
+            ),
+        ]);
+
+        // Count and remove mutual comments to keep commentsCount accurate
+        if (opts.session) {
             [blockedOnCurrentCounts, blockerOnTargetCounts] = await Promise.all([
                 Comment.aggregate([
                     { $match: { post: { $in: currentUserPostIds }, author: targetUser._id } },
                     { $group: { _id: "$post", count: { $sum: 1 } } },
-                ]).session(session),
+                ]).session(opts.session),
                 Comment.aggregate([
                     { $match: { post: { $in: targetUserPostIds }, author: currentUser._id } },
                     { $group: { _id: "$post", count: { $sum: 1 } } },
-                ]).session(session),
+                ]).session(opts.session),
             ]);
-
-            await Promise.all([
-                Comment.deleteMany(
-                    { post: { $in: currentUserPostIds }, author: targetUser._id },
-                    { session }
-                ),
-                Comment.deleteMany(
-                    { post: { $in: targetUserPostIds }, author: currentUser._id },
-                    { session }
-                ),
+        } else {
+            [blockedOnCurrentCounts, blockerOnTargetCounts] = await Promise.all([
+                Comment.aggregate([
+                    { $match: { post: { $in: currentUserPostIds }, author: targetUser._id } },
+                    { $group: { _id: "$post", count: { $sum: 1 } } },
+                ]),
+                Comment.aggregate([
+                    { $match: { post: { $in: targetUserPostIds }, author: currentUser._id } },
+                    { $group: { _id: "$post", count: { $sum: 1 } } },
+                ]),
             ]);
+        }
 
-            const commentCountUpdates = [
-                ...blockedOnCurrentCounts.map(({ _id, count }) => ({
-                    updateOne: { filter: { _id }, update: { $inc: { commentsCount: -count } } },
-                })),
-                ...blockerOnTargetCounts.map(({ _id, count }) => ({
-                    updateOne: { filter: { _id }, update: { $inc: { commentsCount: -count } } },
-                })),
-            ];
-            if (commentCountUpdates.length) {
-                await Post.bulkWrite(commentCountUpdates, { session, ordered: false });
-            }
+        await Promise.all([
+            Comment.deleteMany(
+                { post: { $in: currentUserPostIds }, author: targetUser._id },
+                opts
+            ),
+            Comment.deleteMany(
+                { post: { $in: targetUserPostIds }, author: currentUser._id },
+                opts
+            ),
+        ]);
 
-            // Remove cross-bookmarks
-            await Promise.all([
-                User.updateOne(
-                    { _id: currentUserId },
-                    { $pull: { bookmarks: { $in: targetUserPostIds } } },
-                    { session }
-                ),
-                User.updateOne(
-                    { _id: targetUserId },
-                    { $pull: { bookmarks: { $in: currentUserPostIds } } },
-                    { session }
-                ),
-            ]);
-        });
+        const commentCountUpdates = [
+            ...blockedOnCurrentCounts.map(({ _id, count }) => ({
+                updateOne: { filter: { _id }, update: { $inc: { commentsCount: -count } } },
+            })),
+            ...blockerOnTargetCounts.map(({ _id, count }) => ({
+                updateOne: { filter: { _id }, update: { $inc: { commentsCount: -count } } },
+            })),
+        ];
+        if (commentCountUpdates.length) {
+            await Post.bulkWrite(commentCountUpdates, { ...opts, ordered: false });
+        }
+
+        // Remove cross-bookmarks
+        await Promise.all([
+            User.updateOne(
+                { _id: currentUserId },
+                { $pull: { bookmarks: { $in: targetUserPostIds } } },
+                opts
+            ),
+            User.updateOne(
+                { _id: targetUserId },
+                { $pull: { bookmarks: { $in: currentUserPostIds } } },
+                opts
+            ),
+        ]);
+    };
+
+    try {
+        try {
+            await session.withTransaction(async () => {
+                await performBlock({ session });
+            });
+        } catch (error) {
+            // mongodb-memory-server (and some standalone Mongo deployments) do not support transactions.
+            // Fall back to non-transactional atomic update + idempotent notification.
+            const message = String(error?.message || "");
+            const txNotSupported =
+                message.includes("Transaction numbers are only allowed") ||
+                message.includes("transactions are not supported");
+
+            if (!txNotSupported) throw error;
+
+            await performBlock();
+        }
 
         if (alreadyBlocked) {
             return res.status(400).json({ message: "User is already blocked" });
