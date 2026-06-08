@@ -4,6 +4,7 @@ import Post from "../models/post.model.js";
 import User from "../models/user.model.js";
 import Follow from "../models/follow.model.js";
 import Notification from "../models/notification.model.js";
+import Report from "../models/report.model.js";
 import { getIO } from "../socket/socket.js";
 import { commentSchema } from "../validators/comment.validator.js";
 import asyncHandler from "../utils/asyncHandler.js";
@@ -169,8 +170,17 @@ export const deleteComment = asyncHandler(async (req, res) => {
         return res.status(403).json({ message: "Not allowed" });
     }
 
-    await comment.deleteOne();
-    await Notification.deleteOne({ comment: comment._id, type: "comment" });
-    await Post.findByIdAndUpdate(comment.post, { $inc: { commentsCount: -1 } });
+    const session = await mongoose.startSession();
+    try {
+        await session.withTransaction(async () => {
+            await comment.deleteOne({ session });
+            await Report.deleteMany({ targetType: "comment", targetId: comment._id }, { session });
+            await Notification.deleteMany({ comment: comment._id }, { session });
+            await Post.findByIdAndUpdate(comment.post, { $inc: { commentsCount: -1 } }, { session });
+        });
+    } finally {
+        await session.endSession();
+    }
+
     res.json({ success: true });
 });
