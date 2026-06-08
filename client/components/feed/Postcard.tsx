@@ -82,11 +82,14 @@ export default function PostCard({ post, setPost }: PostCardProps) {
         src: string | null;
         loaded: boolean;
         failed: boolean;
+        slowLoad: boolean;
     }>({
         src: post.image || null,
         loaded: false,
         failed: false,
+        slowLoad: false,
     });
+    const imageTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     function timeAgo(dateString: string) {
         const now = new Date().getTime();
@@ -234,7 +237,7 @@ export default function PostCard({ post, setPost }: PostCardProps) {
             return;
         }
 
-        const timeoutId = setTimeout(() => {
+        imageTimeoutRef.current = setTimeout(() => {
             setImageState((prev) => {
                 const currentSrc = post.image || null;
                 if (prev.src === currentSrc && (prev.loaded || prev.failed)) {
@@ -242,14 +245,18 @@ export default function PostCard({ post, setPost }: PostCardProps) {
                 }
 
                 return {
+                    ...prev,
                     src: currentSrc,
-                    loaded: true,
-                    failed: true,
+                    slowLoad: true,
                 };
             });
         }, 8000);
 
-        return () => clearTimeout(timeoutId);
+        return () => {
+            if (imageTimeoutRef.current) {
+                clearTimeout(imageTimeoutRef.current);
+            }
+        };
     }, [post.image]);
     useEffect(() => {
         setBookmarked(post.isBookmarked ?? false);
@@ -470,18 +477,22 @@ Report post </button>
                             alt="Post attachment"
                             width={1200}
                             height={800}
-                            onLoad={() =>
+                            onLoad={() => {
+                                if (imageTimeoutRef.current) clearTimeout(imageTimeoutRef.current);
                                 setImageState({
                                     src: post.image || null,
                                     loaded: true,
                                     failed: false,
-                                })
-                            }
+                                    slowLoad: false,
+                                });
+                            }}
                             onError={() => {
+                                if (imageTimeoutRef.current) clearTimeout(imageTimeoutRef.current);
                                 setImageState({
                                     src: post.image || null,
-                                    loaded: true,
+                                    loaded: false,
                                     failed: true,
+                                    slowLoad: false,
                                 });
                             }}
                             className={`w-full h-full object-cover transition-opacity duration-200 ${isCurrentImageLoaded ? "opacity-100" : "opacity-0"
