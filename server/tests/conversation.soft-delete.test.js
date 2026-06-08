@@ -1,9 +1,12 @@
 import { jest } from "@jest/globals";
 
+export const mockEmit = jest.fn();
+export const mockTo = jest.fn().mockReturnValue({ emit: mockEmit });
+
 jest.unstable_mockModule("../src/socket/socket.js", () => ({
   getIO: () => ({
-    to: () => ({ emit: () => {} }),
-    emit: () => {},
+    to: mockTo,
+    emit: jest.fn(),
   }),
 }));
 
@@ -95,6 +98,9 @@ describe("DELETE /api/conversations/:id - Soft Delete", () => {
   });
 
   it("hides the conversation from the deleting user but preserves it for the other participant", async () => {
+    mockEmit.mockClear();
+    mockTo.mockClear();
+
     const resA = await request(app)
       .delete(`/api/conversation/${conversationId}`)
       .set("Cookie", cookieA);
@@ -107,9 +113,19 @@ describe("DELETE /api/conversations/:id - Soft Delete", () => {
 
     const messages = await Message.find({ conversation: conversationId });
     expect(messages.length).toBeGreaterThan(0);
+
+    // Verify it sent participant_deleted to the other participant
+    expect(mockTo).toHaveBeenCalledWith(userB._id.toString());
+    const call = mockEmit.mock.calls.find(call => call[0] === "conversation:participant_deleted");
+    expect(call).toBeDefined();
+    expect(call[1].conversationId.toString()).toBe(conversationId);
+    expect(call[1].deletedBy.toString()).toBe(userA._id.toString());
   });
 
   it("physically deletes the conversation and messages only when all participants have deleted", async () => {
+    mockEmit.mockClear();
+    mockTo.mockClear();
+
     await request(app)
       .delete(`/api/conversation/${conversationId}`)
       .set("Cookie", cookieA);
@@ -122,6 +138,13 @@ describe("DELETE /api/conversations/:id - Soft Delete", () => {
 
     expect(await Conversation.findById(conversationId)).toBeNull();
     expect(await Message.countDocuments({ conversation: conversationId })).toBe(0);
+
+    // Verify socket notifications were sent to both participants
+    expect(mockTo).toHaveBeenCalledWith(userA._id.toString());
+    expect(mockTo).toHaveBeenCalledWith(userB._id.toString());
+    const calls = mockEmit.mock.calls.filter(call => call[0] === "conversation:deleted");
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0][1].conversationId.toString()).toBe(conversationId);
   });
 
   it("returns 400 when a user tries to delete an already-deleted conversation", async () => {
