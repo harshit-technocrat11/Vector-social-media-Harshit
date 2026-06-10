@@ -51,6 +51,7 @@ export type Post = {
   sharesCount?: number;
   createdAt: string;
   isBookmarked?: boolean;
+  isPinned?: boolean;
 };
 
 export type Comment = {
